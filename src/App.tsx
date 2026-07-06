@@ -505,7 +505,7 @@ function App() {
     setTimeout(() => {
       toPng(element, {
         backgroundColor: "#fafafa",
-        filter: (node) => {
+        filter: (node: any) => {
           if (
             node.classList?.contains("react-flow__controls") || 
             node.classList?.contains("nodrag") || 
@@ -518,13 +518,13 @@ function App() {
           return true
         }
       })
-      .then((dataUrl) => {
+      .then((dataUrl: any) => {
         const link = document.createElement("a")
         link.download = `${treeName || "math-tree"}.png`
         link.href = dataUrl
         link.click()
       })
-      .catch((err) => {
+      .catch((err: any) => {
         console.error("画像の生成に失敗しました:", err)
         alert("画像の出力中にエラーが発生しました。")
       })
