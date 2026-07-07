@@ -463,29 +463,35 @@ function App() {
       }
     }
   }
-// 2. 共有URLを生成してクリップボードにコピーする関数
+// 2. 共有URLを生成してクリップボードにコピーする関数（確定修正版）
   const handleShare = async () => {
     try {
-      // 保存するデータオブジェクトを作成
+      // 保存するデータオブジェクト
       const dataToSave = {
         nodes,
         edges,
-        treeName, // treeNameに統一
+        treeName,
       };
 
       // ランダムな一意のIDを生成（8文字の英数字）
       const dataId = Math.random().toString(36).substring(2, 10);
 
+      // 💡最重要：JSONを一度きれいな「文字列」に変換します
+      const jsonString = JSON.stringify(dataToSave);
+
       // kvdb.io にデータを保存
       const response = await fetch(`https://kvdb.io/MN887yq6p4m6Yg7vXpRDY6/${dataId}`, {
-        method: 'PUT',
+        method: 'POST', // ➔ POSTに戻します！
         headers: {
-          'Content-Type': 'application/json',
+          // 💡Content-Typeを json ではなく text/plain (ただの文字列) に指定
+          'Content-Type': 'text/plain', 
         },
-        body: JSON.stringify(dataToSave),
+        body: jsonString, // ➔ 文字列化したデータをそのまま流し込む
       });
 
-      if (!response.ok) throw new Error('サーバーへの保存に失敗しました');
+      if (!response.ok) {
+        throw new Error(`サーバーエラー: ${response.status}`);
+      }
 
       // 短い共有URLを組み立て
       const shareUrl = `${window.location.origin}${window.location.pathname}?id=${dataId}`;
