@@ -1,444 +1,402 @@
-// @ts-ignore
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import { useState, useCallback, useEffect } from "react"
+import React, { useState, useEffect, useCallback, useMemo } from "react"
 import ReactFlow, {
+  ReactFlowProvider,
   Background,
   Controls,
   useNodesState,
   useEdgesState,
   addEdge,
-  MarkerType,
-  Handle,
-  Position,
-  getSmoothStepPath, // 🌟 かくかくエッジを採用
-  EdgeLabelRenderer,
-  ReactFlowProvider,
-  useReactFlow,
+  // ★ ここから型定義用として type を追加
   type Node,
   type Edge,
   type Connection,
-  type NodeProps,
   type EdgeProps,
+  // ★ ここまで
+  MarkerType,
+  useReactFlow,
+  Handle,
+  Position,
+  getBezierPath,
 } from "reactflow"
 import "reactflow/dist/style.css"
-import "katex/dist/katex.min.css"
-import { InlineMath } from "react-katex"
-import { toPng } from "html-to-image"
 import dagre from "dagre"
+import { toPng } from "html-to-image"
 
-type NodeData = {
+// ------------------------------------------------------------------
+// 1. 型定義 & 定数
+// ------------------------------------------------------------------
+type NodeType = "definition" | "theorem"
+
+interface NodeData {
   label: string
-  type: "definition" | "theorem"
+  type: NodeType
   description?: string
 }
 
-type EdgeData = {
-  label?: string
-  type?: "none" | "generalization" | "extension" | "example" | "proof"
-  color?: string
-  directed?: boolean
-  animated?: boolean
+interface EdgeData {
+  label: string 
+  type: "none" | "generalization" | "extension" | "example" | "proof"
+  color: string
+  directed: boolean
+  animated: boolean
 }
 
 const NODE_COLORS = {
-  definition: { background: "#e8f5e9", border: "#4caf50", text: "#1b5e20" },
-  theorem: { background: "#e3f2fd", border: "#2196f3", text: "#0d47a1" }
+  definition: { bg: "#e8f5e9", border: "#2e7d32", text: "#1b5e20" },
+  theorem: { bg: "#e3f2fd", border: "#0288d1", text: "#0d47a1" },
 }
 
-// 🌐 【URL共有用】データを安全にBase64文字列に変換する関数
-function encodeData(data: any): string {
-  const jsonStr = JSON.stringify(data);
-  // 日本語（UTF-8）を壊さないようにエンコードしてBase64化
-  return btoa(encodeURIComponent(jsonStr).replace(/%([0-9A-F]{2})/g, (_, p1) => {
-    return String.fromCharCode(parseInt(p1, 16));
-  }));
+// 初期表示用のウェルカムデータ
+const welcomeNodes: Node<NodeData>[] = [
+  {
+    id: "welcome-1",
+    type: "mathNode",
+    position: { x: 100, y: 150 },
+    data: { label: "数式マップへようこそ", type: "definition", description: "これは数学の繋がりを可視化するツールです。" },
+    style: { overflow: "visible" }
+  },
+  {
+    id: "welcome-2",
+    type: "mathNode",
+    position: { x: 450, y: 150 },
+    data: { label: "定理の発展", type: "theorem", description: "定義から定理へと矢印を伸ばして、知識の構造を作れます。" },
+    style: { overflow: "visible" }
+  }
+]
+
+const welcomeEdges: Edge<EdgeData>[] = [
+  {
+    id: "welcome-e1",
+    source: "welcome-1",
+    target: "welcome-2",
+    type: "mathEdge",
+    data: { label: "導出", type: "none", color: "#666666", directed: true, animated: true }
+  }
+]
+
+// ------------------------------------------------------------------
+// 2. 数式レンダリング用コンポーネント (プレーンテキストとして安全に表示)
+// ------------------------------------------------------------------
+const MathText: React.FC<{ text: string }> = ({ text }) => {
+  return <span>{text}</span>
 }
 
-// 🌐 【URL共有用】Base64文字列からデータを復元する関数
-function decodeData(base64Str: string): any {
-  try {
-    const jsonStr = decodeURIComponent(Array.prototype.map.call(atob(base64Str), (c) => {
-      return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-    }).join(''));
-    return JSON.parse(jsonStr);
-  } catch (e) {
-    console.error("URLデータのデコードに失敗しました", e);
-    return null;
-  }
-}
-
-// 📐 日本語 ＋ 数式判別コンポーネント
-function MathText({ text }: { text: string }) {
-  if (!text) return <span></span>
-
-  if (text.includes("```")) {
-    const codeParts = text.split("```")
-    return (
-      <div style={{ textAlign: "left", width: "100%" }}>
-        {codeParts.map((codePart, codeIndex) => {
-          if (codeIndex % 2 === 1) {
-            return (
-              <pre key={codeIndex} style={{
-                background: "#1e1e1e",
-                color: "#d4d4d4",
-                padding: "10px 14px",
-                borderRadius: "4px",
-                fontFamily: "Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace",
-                fontSize: "12.5px",
-                overflowX: "auto",
-                margin: "8px 0",
-                lineHeight: "1.4",
-                border: "1px solid #333",
-                whiteSpace: "pre"
-              }}>
-                <code>{codePart.trim()}</code>
-              </pre>
-            )
-          } else {
-            return <MathText key={codeIndex} text={codePart} />
-          }
-        })}
-      </div>
-    )
-  }
-
-  const textStyle: React.CSSProperties = {
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-    overflowWrap: "anywhere",
-    textAlign: "left",
-    display: "block",
-    width: "100%"
-  }
-
-  if (!text.includes("$")) {
-    return <div style={textStyle}>{text}</div>
-  }
-
-  const parts = text.split("$")
-  return (
-    <div style={textStyle}>
-      {parts.map((part, index) => {
-        if (index % 2 === 1) {
-          return (
-            <span key={index} style={{ display: "inline-block", verticalAlign: "middle", padding: "0 2px", whiteSpace: "normal" }}>
-              <InlineMath math={part} />
-            </span>
-          )
-        } else {
-          return part
-        }
-      })}
-    </div>
-  )
-}
-
-// 🎯 カスタムノード
-function MathNodeCustom({ data, selected, id }: NodeProps<NodeData>) {
-  const type = data.type || "definition"
-  const colorStyle = NODE_COLORS[type]
+// ------------------------------------------------------------------
+// 3. カスタムノード (MathNode)
+// ------------------------------------------------------------------
+const MathNode: React.FC<{ data: NodeData; selected: boolean }> = ({ data, selected }) => {
+  const colors = NODE_COLORS[data.type || "definition"]
 
   return (
-    <div 
+    <div
       className="custom-math-node"
-      data-node-id={id}
       style={{
-        background: colorStyle.background,
-        border: `2px solid ${selected ? "#ef5350" : colorStyle.border}`,
-        borderRadius: "6px",
-        color: colorStyle.text,
-        fontWeight: "bold",
         padding: "12px 16px",
-        minWidth: "160px",
-        maxWidth: "600px",
-        minHeight: "60px",
-        width: "auto",
-        height: "auto",
-        resize: "both",
-        overflow: "auto",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        boxShadow: selected ? "0 0 10px #ef5350" : "0 2px 4px rgba(0,0,0,0.05)",
-        textAlign: "center",
+        borderRadius: "8px",
+        background: colors.bg,
+        border: `2px solid ${selected ? "#ff9800" : colors.border}`,
+        boxShadow: selected ? "0 0 12px #ff9800" : "0 4px 6px rgba(0,0,0,0.05)",
+        color: colors.text,
+        minWidth: "180px",
+        maxWidth: "280px",
         fontSize: "14px",
-        wordBreak: "break-word",
-        whiteSpace: "normal",
-        transition: "border-color 0.2s, box-shadow 0.2s, opacity 0.2s"
+        fontWeight: "bold",
+        textAlign: "center",
+        transition: "all 0.15s ease",
+        position: "relative",
       }}
     >
-      <Handle type="target" position={Position.Left} style={{ background: colorStyle.border, width: 8, height: 8 }} />
-      <div style={{ width: "100%", padding: "0 4px", wordWrap: "break-word", whiteSpace: "normal" }}>
-        <MathText text={data.label || ""} />
+      <Handle
+        type="target"
+        position={Position.Left}
+        style={{ background: colors.border, width: "10px", height: "10px", borderRadius: "50%" }}
+      />
+      <div style={{ wordBreak: "break-word" }}>
+        <MathText text={data.label} />
       </div>
-      <Handle type="source" position={Position.Right} style={{ background: colorStyle.border, width: 8, height: 8 }} />
+      <Handle
+        type="source"
+        position={Position.Right}
+        style={{ background: colors.border, width: "10px", height: "10px", borderRadius: "50%" }}
+      />
     </div>
   )
 }
 
-// ⭕ カスタムエッジ（重複回避版）
-function MathEdgeCustom({ id, sourceX, sourceY, targetX, targetY, sourcePosition = Position.Right, targetPosition = Position.Left, style = {}, markerEnd, data, selected }: EdgeProps<EdgeData>) {
-  const isSelected = selected
+// ------------------------------------------------------------------
+// 4. カスタムエッジ (MathEdge) - 重なり回避ロジック付き
+// ------------------------------------------------------------------
+const MathEdge: React.FC<EdgeProps> = ({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  style = {},
+  markerEnd,
+  data,
+}) => {
+  const sameRouteIndex = data?.sameRouteIndex || 0
+  const sameRouteCount = data?.sameRouteCount || 1
 
-  // 🎯【重なり防止機能】同じノード間を結ぶエッジがある場合、インデックスに応じて高さをわずかにずらす
-  const edgeIndex = (data as any)?.sameRouteIndex || 0
-  const totalEdges = (data as any)?.sameRouteCount || 1
-  
-  // 複数ある場合は、20pxずつ上下にずらして直角の通り道（中心点）を分ける
-  const offset = totalEdges > 1 ? (edgeIndex - (totalEdges - 1) / 2) * 24 : 0
-
-  const [edgePath, labelX, labelY] = getSmoothStepPath({ 
-    sourceX, 
-    sourceY: sourceY + (totalEdges > 1 ? (edgeIndex - (totalEdges - 1) / 2) * 4 : 0), // 接続点もわずかにずらす 
-    sourcePosition, 
-    targetX, 
-    targetY: targetY + (totalEdges > 1 ? (edgeIndex - (totalEdges - 1) / 2) * 4 : 0), 
-    targetPosition,
-    borderRadius: 4,
-    offset: 30 + offset // 🌟 ここで直角に曲がる位置をずらして線の重複を防ぐ！
-  })
-
-  const labelText = data?.label || ""
-
-  const edgeStyle: React.CSSProperties = {
-    ...style,
-    stroke: isSelected ? "#ef5350" : (data?.color || "#666666"), 
-    strokeWidth: isSelected ? 3 : 2,
-    fill: "none", 
-    transition: "stroke 0.2s, stroke-width 0.2s"
+  let curvature = 0.25
+  if (sameRouteCount > 1) {
+    curvature = 0.25 + (sameRouteIndex - (sameRouteCount - 1) / 2) * 0.15
   }
 
-  // 🌟 ラベルの位置も重ならないように、線のズレに合わせて上下に微調整
-  const adjustedLabelY = labelY + (totalEdges > 1 ? (edgeIndex - (totalEdges - 1) / 2) * 12 : 0)
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+    curvature,
+  })
 
   return (
     <>
-      <path 
-        id={id} 
-        style={edgeStyle} 
-        className="react-flow__edge-path" 
-        d={edgePath} 
-        markerEnd={markerEnd} />
-      {labelText && (
-        <EdgeLabelRenderer>
-          <div style={{ position: "absolute", transform: `translate(-50%, -50%) translate(${labelX}px,${adjustedLabelY}px)`, pointerEvents: "all", zIndex: 10 }} className="nodrag nopan">
-            <div style={{ 
-              background: "#ffffff", 
-              padding: "4px 8px", 
-              borderRadius: "4px", 
-              boxShadow: "0 1px 4px rgba(0,0,0,0.1)", 
-              border: `1px solid ${isSelected ? "#ef5350" : "#ccc"}`, 
-              color: isSelected ? "#ef5350" : "#333", 
-              fontSize: "11px",              
-              fontWeight: "bold", 
-              whiteSpace: "normal",          
-              wordBreak: "break-word",      
-              display: "block", 
-              maxWidth: "140px",            
-              width: "max-content",
-              textAlign: "center"           
-            }}>
-              <MathText text={labelText} />
-            </div>
-          </div>
-        </EdgeLabelRenderer>
+      <path id={id} style={style} className="react-flow__edge-path" d={edgePath} markerEnd={markerEnd} />
+      {data?.label && (
+        <g transform={`translate(${labelX}, ${labelY})`}>
+          <rect
+            x={-40}
+            y={-10}
+            width={80}
+            height={20}
+            fill="white"
+            rx={4}
+            opacity={0.9}
+            style={{ stroke: style.stroke || "#666", strokeWidth: 1 }}
+          />
+          <text
+            textAnchor="middle"
+            y={4}
+            style={{ fontSize: "10px", fill: "#333", fontWeight: "bold", pointerEvents: "none" }}
+          >
+            {data.label}
+          </text>
+        </g>
       )}
     </>
   )
 }
 
-const nodeTypes = { mathNode: MathNodeCustom }
-const edgeTypes = { mathEdge: MathEdgeCustom }
+const nodeTypes = { mathNode: MathNode }
+const edgeTypes = { mathEdge: MathEdge }
 
-const welcomeNodes: Node<NodeData>[] = [
-  { id: "welcome_1", type: "mathNode", position: { x: 100, y: 250 }, data: { label: "ようこそ！ $f(x) = x^n + 3x^2$", type: "definition", description: "数式ライブラリが有効化されています。$マークで囲むと自動で綺麗な数式になります。" } },
-  { id: "welcome_2", type: "mathNode", position: { x: 600, y: 250 }, data: { label: "sin(α + β)", type: "theorem", description: "ギリシャ文字などもそのまま美しく描画されます。" } }
-]
-
-const welcomeEdges: Edge<EdgeData>[] = [
-  { id: "welcome-edge", source: "welcome_1", target: "welcome_2", type: "mathEdge", data: { label: "つなぎ目", type: "none", color: "#0288d1", directed: true, animated: true } }
-]
-
-function App() {
+// ------------------------------------------------------------------
+// 5. メインアプリケーションコンポーネント
+// ------------------------------------------------------------------
+export function App() {
   const { fitView } = useReactFlow()
+
   const [nodes, setNodes, onNodesChange] = useNodesState<NodeData>(welcomeNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState<EdgeData>(welcomeEdges)
 
-  const [isModalOpen, setIsModalOpen] = useState(false)
-  const [newNodeLabel, setNewNodeLabel] = useState("")
-  const [newNodeDesc, setNewNodeDesc] = useState("")
-  const [newNodeType, setNewNodeType] = useState<"definition" | "theorem">("definition")
+  const [treeName, setTreeName] = useState<string>("新しい単元名")
+  const [savedTrees, setSavedTrees] = useState<string[]>([])
+  const [isDirty, setIsDirty] = useState<boolean>(false)
+  const [searchQuery, setSearchQuery] = useState<string>("")
+
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(false)
+  const [newNodeLabel, setNewNodeLabel] = useState<string>("")
+  const [newNodeDesc, setNewNodeDesc] = useState<string>("")
+  const [newNodeType, setNewNodeType] = useState<NodeType>("definition")
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [connectSourceId, setConnectSourceId] = useState<string | null>(null)
   const [previewNode, setPreviewNode] = useState<Node<NodeData> | null>(null)
 
-  const [treeName, setTreeName] = useState<string>("新しい単元名")
-  const [savedTrees, setSavedTrees] = useState<string[]>([])
-  const [isDirty, setIsDirty] = useState(false)
-  const [searchQuery, setSearchQuery] = useState<string>("")
+  useEffect(() => {
+    const list = localStorage.getItem("math-tree-list")
+    if (list) {
+      const parsed = JSON.parse(list) as string[]
+      setSavedTrees(parsed)
+      if (parsed.length > 0) {
+        loadTree(parsed[0])
+      }
+    }
+  }, [])
 
-  const selectedNodeData = nodes.find((n) => n.id === selectedNodeId)
-  const selectedEdgeData = edges.find((e) => e.id === selectedEdgeId)
+  useEffect(() => {
+    if (nodes !== welcomeNodes || edges !== welcomeEdges) {
+      setIsDirty(true)
+    }
+  }, [nodes, edges])
+
+  const selectedNodeData = useMemo(() => nodes.find((n) => n.id === selectedNodeId) || null, [nodes, selectedNodeId])
+  const selectedEdgeData = useMemo(() => edges.find((e) => e.id === selectedEdgeId) || null, [edges, selectedEdgeId])
 
   useEffect(() => {
     if (selectedNodeId) {
-      const current = nodes.find(n => n.id === selectedNodeId)
-      if (current) setPreviewNode(current)
+      const node = nodes.find((n) => n.id === selectedNodeId)
+      if (node) setPreviewNode(node)
     }
-  }, [nodes, selectedNodeId])
-
-  useEffect(() => {
-    const hasNewContent = nodes.some(n => !n.id.startsWith("welcome_")) || edges.some(e => !e.id.startsWith("welcome"))
-    if (hasNewContent) setIsDirty(true)
-  }, [nodes, edges])
-
-  useEffect(() => {
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (isDirty) {
-        e.preventDefault()
-        e.returnValue = "変更が保存されていません。移動しますか？"
-      }
-    }
-    window.addEventListener("beforeunload", handleBeforeUnload)
-    return () => window.removeEventListener("beforeunload", handleBeforeUnload)
-  }, [isDirty])
-
-  useEffect(() => {
-    const list = localStorage.getItem("math-tree-list")
-    if (list) setSavedTrees(JSON.parse(list))
-  }, [])
-
-  // 🌐 【追加】起動時にURLの「?data=xxx」パラメータをチェックしてデータを復元
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const sharedDataParam = params.get("data");
-    
-    if (sharedDataParam) {
-      const decoded = decodeData(sharedDataParam);
-      if (decoded && decoded.nodes && decoded.edges) {
-        setNodes(decoded.nodes);
-        setEdges(decoded.edges);
-        setTreeName(decoded.treeName || "共有されたツリー");
-        // 描画が安定するまで少し待ってから全体をフィットさせる
-        setTimeout(() => fitView({ padding: 0.1 }), 200);
-      }
-    }
-  }, []);
-
-  // 🔍 検索窓連携
-  useEffect(() => {
-    nodes.forEach((node) => {
-      const domNode = document.querySelector(`[data-node-id="${node.id}"]`) as HTMLElement
-      if (!domNode) return
-
-      if (!searchQuery.trim()) {
-        domNode.style.opacity = "1"
-        domNode.style.borderColor = node.id === selectedNodeId ? "#ef5350" : (NODE_COLORS[node.data.type || "definition"].border)
-        domNode.style.boxShadow = node.id === selectedNodeId ? "0 0 10px #ef5350" : "0 2px 4px rgba(0,0,0,0.05)"
-        return
-      }
-
-      const label = (node.data.label || "").toLowerCase()
-      const desc = (node.data.description || "").toLowerCase()
-      const q = searchQuery.toLowerCase()
-
-      if (label.includes(q) || desc.includes(q)) {
-        domNode.style.opacity = "1"
-        domNode.style.borderColor = "#ff9800"
-        domNode.style.boxShadow = "0 0 15px #ff9800"
-      } else {
-        domNode.style.opacity = "0.25"
-        domNode.style.boxShadow = "none"
-        domNode.style.borderColor = NODE_COLORS[node.data.type || "definition"].border
-      }
-    })
-  }, [searchQuery, nodes, selectedNodeId])
-
-  const loadTree = (name: string) => {
-    if (isDirty && !window.confirm("現在の変更が保存されていません。切り替えますか？")) return
-    const data = localStorage.getItem(`math-tree-data-${name}`)
-    if (data) {
-      const { nodes: sn, edges: se } = JSON.parse(data)
-      setNodes(sn)
-      setEdges(se)
-      setTreeName(name)
-      setSelectedNodeId(null)
-      setSelectedEdgeId(null)
-      setPreviewNode(null)
-      setSearchQuery("")
-      setTimeout(() => setIsDirty(false), 100)
-    }
-  }
+  }, [selectedNodeId, nodes])
 
   const saveCurrentTree = () => {
-    if (!treeName.trim() || treeName === "新しい単元名") return alert("有効な単元名を入力してください")
-    localStorage.setItem(`math-tree-data-${treeName}`, JSON.stringify({ nodes, edges }))
+    if (!treeName.trim()) return alert("単元名を入力してください。")
+    const data = { nodes, edges }
+    localStorage.setItem(`math-tree-data-${treeName}`, JSON.stringify(data))
+
     if (!savedTrees.includes(treeName)) {
       const newList = [...savedTrees, treeName]
       setSavedTrees(newList)
       localStorage.setItem("math-tree-list", JSON.stringify(newList))
     }
     setIsDirty(false)
-    alert(`「${treeName}」を保存しました！`)
+    alert(`「${treeName}」をローカルに保存しました！`)
   }
 
-  // 🌐 【追加】現在の状態をエンコードして共有URLをクリップボードにコピーする関数
-  const copyShareLink = () => {
-    const payload = {
-      treeName,
-      nodes,
-      edges
-    };
-    const encoded = encodeData(payload);
-    // パラメータを付けたURLを生成 (現在のアドレスのベースを使用)
-    const shareUrl = `${window.location.origin}${window.location.pathname}?data=${encoded}`;
-    
-    navigator.clipboard.writeText(shareUrl)
-      .then(() => {
-        alert("共有用URLをクリップボードにコピーしました！SNSやメールで共有できます。");
-      })
-      .catch((err) => {
-        console.error("URLのコピーに失敗しました", err);
-        alert("URLのコピーに失敗しました。お手数ですが、コンソール等をご確認ください。");
-      });
-  };
-
-  const exportJSON = () => {
-    const dataStr = JSON.stringify({ treeName, nodes, edges }, null, 2)
-    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr)
-    const linkElement = document.createElement('a')
-    linkElement.setAttribute('href', dataUri)
-    linkElement.setAttribute('download', `${treeName || 'math-tree'}.json`)
-    linkElement.click()
-  }
-
-  const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const fileReader = new FileReader()
-    if (e.target.files && e.target.files[0]) {
-      fileReader.readAsText(e.target.files[0], "UTF-8")
-      fileReader.onload = (event) => {
-        try {
-          const target = event.target?.result
-          if (typeof target === "string") {
-            const parsed = JSON.parse(target)
-            if (parsed.nodes && parsed.edges) {
-              setNodes(parsed.nodes)
-              setEdges(parsed.edges)
-              setTreeName(parsed.treeName || "インポートしたツリー")
-              setIsDirty(true)
-              setSearchQuery("")
-              alert("ツリーを読み込みました！")
-            }
-          }
-        } catch {
-          alert("ファイルの読み込みに失敗しました。")
-        }
-      }
+  const loadTree = (name: string) => {
+    const raw = localStorage.getItem(`math-tree-data-${name}`)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      setNodes(parsed.nodes || [])
+      setEdges(parsed.edges || [])
+      setTreeName(name)
+      setIsDirty(false)
+      setSelectedNodeId(null)
+      setSelectedEdgeId(null)
+      setPreviewNode(null)
     }
   }
 
+  const exportJSON = () => {
+    const dataStr = JSON.stringify({ nodes, edges, treeName }, null, 2)
+    const blob = new Blob([dataStr], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `${treeName || "math-tree"}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (evt) => {
+      try {
+        const parsed = JSON.parse(evt.target?.result as string)
+        if (parsed.nodes && parsed.edges) {
+          setNodes(parsed.nodes)
+          setEdges(parsed.edges)
+          if (parsed.treeName) setTreeName(parsed.treeName)
+          alert("JSONデータを正常に読み込みました。")
+        }
+      } catch (err) {
+        alert("JSONファイルの解析に失敗しました。")
+      }
+    }
+    reader.readAsText(file)
+  }
+
+const exportHTML = () => {
+  // 1. データをオブジェクトにまとめ、JSON文字列化する
+  const dataObj = { nodes, edges, treeName };
+  const jsonData = JSON.stringify(dataObj);
+
+  // 2. HTMLコンテンツを生成
+ const htmlContent = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>【閲覧専用】${treeName || "数式マップ"}</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; background: #fafafa; color: #333; }
+    #canvas-container { position: relative; width: 100vw; height: calc(100vh - 50px); overflow: auto; }
+    #mock-canvas { position: absolute; top: 0; left: 0; width: 3000px; height: 3000px; background: radial-gradient(#e0e0e0 1px, transparent 1px); background-size: 20px 20px; }
+    .html-node { position: absolute; padding: 12px 16px; border-radius: 8px; font-size: 14px; font-weight: bold; background: white; border: 2px solid #ccc; cursor: pointer; min-width: 180px; box-shadow: 0 4px 6px rgba(0,0,0,0.06); }
+    .definition { border-color: #2e7d32; color: #1b5e20; background: #e8f5e9; }
+    .theorem { border-color: #0288d1; color: #0d47a1; background: #e3f2fd; }
+    #info-panel { position: fixed; bottom: 20px; left: 20px; background: white; padding: 18px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); display: none; z-index: 1000; border-left: 6px solid #ccc; }
+    svg { position: absolute; top: 0; left: 0; width: 3000px; height: 3000px; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="canvas-container">
+    <div id="mock-canvas"><svg id="svg-edges"></svg></div>
+  </div>
+  <div id="info-panel">
+    <div id="info-type"></div>
+    <h4 id="info-title"></h4>
+    <p id="info-desc" style="white-space: pre-wrap;"></p>
+  </div>
+
+  <script>
+    const payload = ${jsonData};
+    const { nodes, edges } = payload;
+    const canvas = document.getElementById("mock-canvas");
+    const svg = document.getElementById("svg-edges");
+    const panel = document.getElementById("info-panel");
+    const nodeMap = {};
+
+    nodes.forEach(n => {
+      const div = document.createElement("div");
+      div.className = "html-node " + (n.data?.type || "definition");
+      div.style.left = n.position.x + "px";
+      div.style.top = n.position.y + "px";
+      div.innerText = n.data?.label || "No Label";
+      div.onclick = (e) => {
+        e.stopPropagation();
+        panel.style.display = "block";
+        document.getElementById("info-type").innerText = n.data?.type === "theorem" ? "【定理】" : "【定義】";
+        document.getElementById("info-title").innerText = n.data?.label || "";
+        document.getElementById("info-desc").innerText = n.data?.description || "";
+      };
+      canvas.appendChild(div);
+      nodeMap[n.id] = { ...n, el: div };
+    });
+
+    document.body.onclick = () => { panel.style.display = "none"; };
+
+    edges.forEach((e, index) => {
+      const src = nodeMap[e.source];
+      const tgt = nodeMap[e.target];
+      if (!src || !tgt) return;
+
+      const pathId = "path_" + (e.id || index);
+      const x1 = src.position.x + 200, y1 = src.position.y + 25;
+      const x2 = tgt.position.x, y2 = tgt.position.y + 25;
+
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("id", pathId);
+      path.setAttribute("d", \`M \${x1} \${y1} C \${x1 + 60} \${y1}, \${x2 - 60} \${y2}, \${x2} \${y2}\`);
+      path.setAttribute("stroke", "#666");
+      path.setAttribute("stroke-width", "2");
+      path.setAttribute("fill", "none");
+      svg.appendChild(path);
+
+      if (e.data?.label) {
+        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        const textPath = document.createElementNS("http://www.w3.org/2000/svg", "textPath");
+        textPath.setAttributeNS(null, "href", "#" + pathId);
+        textPath.setAttributeNS(null, "startOffset", "50%");
+        textPath.setAttributeNS(null, "text-anchor", "middle");
+        textPath.textContent = e.data.label;
+        text.appendChild(textPath);
+        text.style.fontSize = "12px";
+        text.style.fill = "#555";
+        svg.appendChild(text);
+      }
+    });
+  </script>
+</body>
+</html>`;
+
+  // ダウンロード実行
+  const blob = new Blob([htmlContent], { type: "text/html" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "math_map.html";
+  a.click();
+};
   const addNode = useCallback(() => {
     if (!newNodeLabel.trim()) return
     const id = `node_${Date.now()}`
@@ -447,62 +405,71 @@ function App() {
       type: "mathNode",
       position: { x: Math.random() * 100 + 250, y: Math.random() * 100 + 200 },
       data: { label: newNodeLabel, type: newNodeType, description: newNodeDesc },
-      style: { overflow: "visible" }
+      style: { overflow: "visible" },
     }
     setNodes((nds) => nds.concat(newNode))
-    newNodeLabel && setNewNodeLabel("")
-    newNodeDesc && setNewNodeDesc("")
+    setNewNodeLabel("")
+    setNewNodeDesc("") // ★ここを修正しました (タイポ解消)
     setIsModalOpen(false)
   }, [newNodeLabel, newNodeDesc, newNodeType, setNodes])
 
-  const onConnect = useCallback((params: Connection) => {
-    if (!params.source || !params.target) return
-    const newEdge: Edge<EdgeData> = {
-      id: `e-${params.source}-${params.target}-${Date.now()}`,
-      source: params.source,
-      target: params.target,
-      type: "mathEdge",
-      data: { label: "", type: "none", color: "#666666", directed: true, animated: false }
-    }
-    setEdges((eds) => addEdge(newEdge, eds) as any as Edge<EdgeData>[])
-  }, [setEdges])
-
-  const onNodeClick = useCallback((event: React.MouseEvent, node: Node<NodeData>) => {
-    if (event.shiftKey) {
-      setNodes((nds) => nds.filter((n) => n.id !== node.id))
-      setEdges((eds) => eds.filter((e) => e.source !== node.id && e.target !== node.id))
-      if (selectedNodeId === node.id) setSelectedNodeId(null)
-      if (previewNode?.id === node.id) setPreviewNode(null)
-      setConnectSourceId(null)
-      return
-    }
-
-    setSelectedNodeId(node.id)
-    setSelectedEdgeId(null)
-
-    if (!connectSourceId) {
-      setConnectSourceId(node.id)
-    } else if (connectSourceId === node.id) {
-      setConnectSourceId(null)
-    } else {
-      const existingEdge = edges.find(
-        (e) => (e.source === connectSourceId && e.target === node.id) || (e.source === node.id && e.target === connectSourceId)
-      )
-      if (existingEdge) {
-        setEdges((eds) => eds.filter((e) => e.id !== existingEdge.id))
-      } else {
-        const newEdge: Edge<EdgeData> = {
-          id: `e-${connectSourceId}-${node.id}-${Date.now()}`,
-          source: connectSourceId,
-          target: node.id,
-          type: "mathEdge",
-          data: { label: "", type: "none", color: "#666666", directed: true, animated: false }
-        }
-        setEdges((eds) => addEdge(newEdge, eds) as any as Edge<EdgeData>[])
+  const onConnect = useCallback(
+    (params: Connection) => {
+      if (!params.source || !params.target) return
+      const newEdge: Edge<EdgeData> = {
+        id: `e-${params.source}-${params.target}-${Date.now()}`,
+        source: params.source,
+        target: params.target,
+        type: "mathEdge",
+        data: { label: "", type: "none", color: "#666666", directed: true, animated: false },
       }
-      setConnectSourceId(null)
-    }
-  }, [connectSourceId, edges, selectedNodeId, previewNode, setNodes, setEdges])
+      setEdges((eds) => addEdge(newEdge, eds))
+    },
+    [setEdges]
+  )
+
+  const onNodeClick = useCallback(
+    (event: React.MouseEvent, node: Node<NodeData>) => {
+      if (event.shiftKey) {
+        setNodes((nds) => nds.filter((n) => n.id !== node.id))
+        setEdges((eds) => eds.filter((e) => e.source !== node.id && e.target !== node.id))
+        if (selectedNodeId === node.id) setSelectedNodeId(null)
+        if (previewNode?.id === node.id) setPreviewNode(null)
+        setConnectSourceId(null)
+        return
+      }
+
+      setSelectedNodeId(node.id)
+      setSelectedEdgeId(null)
+
+      if (!connectSourceId) {
+        setConnectSourceId(node.id)
+      } else if (connectSourceId === node.id) {
+        setConnectSourceId(null)
+      } else {
+        const existingEdge = edges.find(
+          (e) =>
+            (e.source === connectSourceId && e.target === node.id) ||
+            (e.source === node.id && e.target === connectSourceId)
+        )
+
+        if (existingEdge) {
+          setEdges((eds) => eds.filter((e) => e.id !== existingEdge.id))
+        } else {
+          const newEdge: Edge<EdgeData> = {
+            id: `e-${connectSourceId}-${node.id}-${Date.now()}`,
+            source: connectSourceId,
+            target: node.id,
+            type: "mathEdge",
+            data: { label: "", type: "none", color: "#666666", directed: true, animated: false },
+          }
+          setEdges((eds) => addEdge(newEdge, eds))
+        }
+        setConnectSourceId(null)
+      }
+    },
+    [connectSourceId, edges, selectedNodeId, previewNode, setNodes, setEdges]
+  )
 
   const onEdgeClick = useCallback((_: React.MouseEvent, edge: Edge) => {
     setSelectedEdgeId(edge.id)
@@ -518,7 +485,6 @@ function App() {
     setPreviewNode(null)
   }, [])
 
-  // 📐 簡潔さを維持する初期レイアウト
   const autoLayout = useCallback(() => {
     if (nodes.length === 0) return
     const dagreGraph = new dagre.graphlib.Graph()
@@ -560,15 +526,15 @@ function App() {
     const element = document.querySelector(".react-flow") as HTMLElement
     if (!element) return
 
-    fitView({ padding: 0.1 });
+    fitView({ padding: 0.1 })
 
     setTimeout(() => {
       toPng(element, {
         backgroundColor: "#fafafa",
         filter: (node: any) => {
           if (
-            node.classList?.contains("react-flow__controls") || 
-            node.classList?.contains("nodrag") || 
+            node.classList?.contains("react-flow__controls") ||
+            node.classList?.contains("nodrag") ||
             node.tagName === "BUTTON" ||
             node.tagName === "INPUT" ||
             node.tagName === "SELECT"
@@ -576,23 +542,21 @@ function App() {
             return false
           }
           return true
-        }
+        },
       })
-      .then((dataUrl: any) => {
-        const link = document.createElement("a")
-        link.download = `${treeName || "math-tree"}.png`
-        link.href = dataUrl
-        link.click()
-      })
-      .catch((err: any) => {
-        console.error("画像の生成に失敗しました:", err)
-        alert("画像の出力中にエラーが発生しました。")
-      })
+        .then((dataUrl: any) => {
+          const link = document.createElement("a")
+          link.download = `${treeName || "math-tree"}.png`
+          link.href = dataUrl
+          link.click()
+        })
+        .catch((err: any) => {
+          console.error("画像の生成に失敗しました:", err)
+          alert("画像の出力中にエラーが発生しました。")
+        })
     }, 150)
   }, [treeName, fitView])
 
-  // 🎯【重なり自動検知インジェクション】
-  // 同じ Source と Target を持つエッジの組み合わせを数え上げ、個々のエッジにインデックスを付与する
   const routeCounts: Record<string, number> = {}
   const routeIndices = edges.map((e) => {
     const key = `${e.source}->${e.target}`
@@ -609,24 +573,22 @@ function App() {
     return {
       ...e,
       type: "mathEdge",
-      // 🌟 ReactFlow標準のlabelプロパティにもテキストを明示的にセットする
-      label: data.label || "", 
-      animated: data.animated || false, 
-      // カスタムエッジ内で重なりを回避するためのメタ情報を流し込む
-      data: { 
+      data: {
         ...data,
         sameRouteIndex: routeIndices[idx],
-        sameRouteCount: routeCounts[key]
-      }, 
-      style: {
-        stroke: isSelected ? "#ef5350" : (data.color || "#666666"),
-        strokeWidth: isSelected ? 3 : 2,
-        fill: "none"
+        sameRouteCount: routeCounts[key],
       },
-      markerEnd: data.directed ? {
-        type: MarkerType.ArrowClosed,
-        color: isSelected ? "#ef5350" : (data.color || "#666666"),
-      } : undefined,
+      style: {
+        stroke: isSelected ? "#ef5350" : data.color || "#666666",
+        strokeWidth: isSelected ? 3 : 2,
+        fill: "none",
+      },
+      markerEnd: data.directed
+        ? {
+            type: MarkerType.ArrowClosed,
+            color: isSelected ? "#ef5350" : data.color || "#666666",
+          }
+        : undefined,
     }
   })
 
@@ -644,9 +606,8 @@ function App() {
           <button onClick={exportImage} style={{ padding: "10px 18px", cursor: "pointer", background: "#6a1b9a", color: "white", border: "none", borderRadius: 4, fontWeight: "bold" }}>
             📸 画像で保存 (PNG)
           </button>
-          {/* 🌐 【追加】URL共有ボタン */}
-          <button onClick={copyShareLink} style={{ padding: "10px 18px", cursor: "pointer", background: "#00b0ff", color: "white", border: "none", borderRadius: 4, fontWeight: "bold", display: "flex", alignItems: "center", gap: "6px" }}>
-            🔗 共有URLをコピー
+          <button onClick={exportHTML} style={{ padding: "10px 18px", background: "#455a64", color: "white", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: "bold" }}>
+            🌐 HTMLとして保存
           </button>
           {isDirty && <span style={{ background: "#ef5350", width: 10, height: 10, borderRadius: "50%", display: "inline-block", alignSelf: "center" }} />}
         </div>
@@ -718,7 +679,7 @@ function App() {
           </select>
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={addNode} style={{ flex: 1, padding: 8, background: "#2e7d32", color: "white", border: "none", borderRadius: 4, cursor: "pointer" }}>追加</button>
-            <button onClick={() => setIsModalOpen(false)} style={{ flex: 1, padding: 8, background: "#eee", border: "none", borderRadius: 4, cursor: "pointer" }}>キャンセル</button>
+<button onClick={() => setIsModalOpen(false)} style={{ flex: 1, padding: 8, background: "#eee", border: "none", borderRadius: 4, cursor: "pointer" }}>キャンセル</button>
           </div>
         </div>
       )}
@@ -749,12 +710,12 @@ function App() {
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <h3 style={{ borderBottom: "1px solid #4f5b62", paddingBottom: 8, margin: 0 }}>エッジ編集</h3>
               <label style={{ fontSize: 13, color: "#b0bec5" }}>関係ラベル名</label>
-              <input value={selectedEdgeData.data?.label || ""} onChange={(e) => setEdges(eds => eds.map(ed => ed.id === selectedEdgeId ? { ...ed, data: { ...ed.data, label: e.target.value } } : ed))} style={{ color: "black", padding: 8, borderRadius: 4, border: "none" }} />
+              <input value={selectedEdgeData.data?.label || ""} onChange={(e) => setEdges(eds => eds.map(ed => ed.id === selectedEdgeId ? { ...ed, data: { ...ed.data, label: e.target.value } as any } : ed))} style={{ color: "black", padding: 8, borderRadius: 4, border: "none" }} />
               <label style={{ fontSize: 13, color: "#b0bec5" }}>関係プリセット</label>
               <select value={selectedEdgeData.data?.type || "none"} onChange={(e) => {
                 const val = e.target.value as any
                 const labelText = val === "none" ? "" : val === "generalization" ? "一般化" : val === "extension" ? "拡張" : val === "example" ? "例" : "証明"
-                setEdges(eds => eds.map(ed => ed.id === selectedEdgeId ? { ...ed, data: { ...ed.data, type: val, label: labelText } } : ed))
+                setEdges(eds => eds.map(ed => ed.id === selectedEdgeId ? { ...ed, data: { ...ed.data, type: val, label: labelText } as any } : ed))
               }} style={{ color: "black", padding: 8, borderRadius: 4, border: "none" }}>
                 <option value="none">指定なし</option>
                 <option value="generalization">一般化</option>
@@ -763,9 +724,9 @@ function App() {
                 <option value="proof">証明</option>
               </select>
               <label style={{ fontSize: 13, color: "#b0bec5" }}>線の色</label>
-              <input type="color" value={selectedEdgeData.data?.color || "#666666"} onChange={(e) => setEdges(eds => eds.map(ed => ed.id === selectedEdgeId ? { ...ed, data: { ...ed.data, color: e.target.value } } : ed))} style={{ width: "100%", height: 35, padding: 0, border: "none", cursor: "pointer" }} />
+              <input type="color" value={selectedEdgeData.data?.color || "#666666"} onChange={(e) => setEdges(eds => eds.map(ed => ed.id === selectedEdgeId ? { ...ed, data: { ...ed.data, color: e.target.value } as any } : ed))} style={{ width: "100%", height: 35, padding: 0, border: "none", cursor: "pointer" }} />
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, marginTop: 10, cursor: "pointer" }}>
-                <input type="checkbox" checked={selectedEdgeData.data?.animated ?? false} onChange={(e) => setEdges(eds => eds.map(ed => ed.id === selectedEdgeId ? { ...ed, data: { ...ed.data, animated: e.target.checked } } : ed))} />
+                <input type="checkbox" checked={selectedEdgeData.data?.animated ?? false} onChange={(e) => setEdges(eds => eds.map(ed => ed.id === selectedEdgeId ? { ...ed, data: { ...ed.data, animated: e.target.checked } as any } : ed))} />
                 💡 アニメーションをON
               </label>
             </div>
