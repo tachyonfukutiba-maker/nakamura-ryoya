@@ -6,21 +6,33 @@ import ReactFlow, {
   useNodesState,
   useEdgesState,
   addEdge,
-  // ★ ここから型定義用として type を追加
   type Node,
   type Edge,
   type Connection,
   type EdgeProps,
-  // ★ ここまで
   MarkerType,
   useReactFlow,
   Handle,
   Position,
-  getBezierPath,
+  // ★ 直角（スムースステップ）パス用の関数に変更
+  getSmoothStepPath,
 } from "reactflow"
 import "reactflow/dist/style.css"
 import dagre from "dagre"
 import { toPng } from "html-to-image"
+
+// アプリ全体でアニメーションを動かすためのグローバルスタイル（CSS）
+const animationStyles = `
+  @keyframes rf-dash {
+    to {
+      stroke-dashoffset: -20;
+    }
+  }
+  .animated-edge-path {
+    stroke-dasharray: 5, 5;
+    animation: rf-dash 1s linear infinite !important;
+  }
+`;
 
 // ------------------------------------------------------------------
 // 1. 型定義 & 定数
@@ -39,6 +51,8 @@ interface EdgeData {
   color: string
   directed: boolean
   animated: boolean
+  sameRouteIndex?: number
+  sameRouteCount?: number
 }
 
 const NODE_COLORS = {
@@ -46,7 +60,6 @@ const NODE_COLORS = {
   theorem: { bg: "#e3f2fd", border: "#0288d1", text: "#0d47a1" },
 }
 
-// 初期表示用のウェルカムデータ
 const welcomeNodes: Node<NodeData>[] = [
   {
     id: "welcome-1",
@@ -75,7 +88,7 @@ const welcomeEdges: Edge<EdgeData>[] = [
 ]
 
 // ------------------------------------------------------------------
-// 2. 数式レンダリング用コンポーネント (プレーンテキストとして安全に表示)
+// 2. 数式レンダリング用コンポーネント (プレーンテキストとして表示)
 // ------------------------------------------------------------------
 const MathText: React.FC<{ text: string }> = ({ text }) => {
   return <span>{text}</span>
@@ -124,7 +137,7 @@ const MathNode: React.FC<{ data: NodeData; selected: boolean }> = ({ data, selec
 }
 
 // ------------------------------------------------------------------
-// 4. カスタムエッジ (MathEdge) - 重なり回避ロジック付き
+// 4. カスタムエッジ (MathEdge) - 直角化＆重なり回避ロジック付き
 // ------------------------------------------------------------------
 const MathEdge: React.FC<EdgeProps> = ({
   id,
@@ -141,24 +154,36 @@ const MathEdge: React.FC<EdgeProps> = ({
   const sameRouteIndex = data?.sameRouteIndex || 0
   const sameRouteCount = data?.sameRouteCount || 1
 
-  let curvature = 0.25
+  // 複数ルート時のオフセット計算
+  let offset = 0
   if (sameRouteCount > 1) {
-    curvature = 0.25 + (sameRouteIndex - (sameRouteCount - 1) / 2) * 0.15
+    offset = (sameRouteIndex - (sameRouteCount - 1) / 2) * 20
   }
 
-  const [edgePath, labelX, labelY] = getBezierPath({
+  // ★ getBezierPath から getSmoothStepPath (直角パス) に変更
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX,
-    sourceY,
+    sourceY: sourceY + (sameRouteCount > 1 ? (sameRouteIndex - (sameRouteCount - 1) / 2) * 4 : 0),
     sourcePosition,
     targetX,
-    targetY,
+    targetY: targetY + (sameRouteCount > 1 ? (sameRouteIndex - (sameRouteCount - 1) / 2) * 4 : 0),
     targetPosition,
-    curvature,
+    borderRadius: 8,
+    offset: 30 + offset
   })
+
+  // ★ アニメーションONのときは、事前に定義したCSSクラスを適用する
+  const edgeClass = data?.animated ? "animated-edge-path" : "";
 
   return (
     <>
-      <path id={id} style={style} className="react-flow__edge-path" d={edgePath} markerEnd={markerEnd} />
+      <path 
+        id={id} 
+        style={style} 
+        className={`react-flow__edge-path ${edgeClass}`} 
+        d={edgePath} 
+        markerEnd={markerEnd} 
+      />
       {data?.label && (
         <g transform={`translate(${labelX}, ${labelY})`}>
           <rect
@@ -297,45 +322,54 @@ export function App() {
     reader.readAsText(file)
   }
 
-const exportHTML = () => {
-  // 1. データをオブジェクトにまとめ、JSON文字列化する
-  const dataObj = { nodes, edges, treeName };
-  const jsonData = JSON.stringify(dataObj);
+  const exportHTML = () => {
+    const dataObj = { nodes, edges, treeName };
+    const jsonData = JSON.stringify(dataObj);
 
-  // 2. HTMLコンテンツを生成
- const htmlContent = `<!DOCTYPE html>
+    const htmlContent = `<!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>【閲覧専用】${treeName || "数式マップ"}</title>
+  <title>【閲覧専用】\${treeName || "数式マップ"}</title>
   <style>
     body { margin: 0; font-family: sans-serif; background: #fafafa; color: #333; }
+    header { background: #263238; color: white; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; }
+    h1 { margin: 0; font-size: 18px; }
     #canvas-container { position: relative; width: 100vw; height: calc(100vh - 50px); overflow: auto; }
     #mock-canvas { position: absolute; top: 0; left: 0; width: 3000px; height: 3000px; background: radial-gradient(#e0e0e0 1px, transparent 1px); background-size: 20px 20px; }
-    .html-node { position: absolute; padding: 12px 16px; border-radius: 8px; font-size: 14px; font-weight: bold; background: white; border: 2px solid #ccc; cursor: pointer; min-width: 180px; box-shadow: 0 4px 6px rgba(0,0,0,0.06); }
-    .definition { border-color: #2e7d32; color: #1b5e20; background: #e8f5e9; }
-    .theorem { border-color: #0288d1; color: #0d47a1; background: #e3f2fd; }
-    #info-panel { position: fixed; bottom: 20px; left: 20px; background: white; padding: 18px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); display: none; z-index: 1000; border-left: 6px solid #ccc; }
+    .html-node { position: absolute; padding: 12px 16px; border-radius: 6px; font-size: 14px; font-weight: bold; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); cursor: pointer; min-width: 160px; max-width: 600px; box-sizing: border-box; }
+    .definition { background: #e8f5e9; border: 2px solid #4caf50; color: #1b5e20; }
+    .theorem { background: #e3f2fd; border: 2px solid #2196f3; color: #0d47a1; }
+    #info-panel { position: fixed; bottom: 20px; left: 20px; background: white; padding: 18px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.18); display: none; z-index: 1000; border-left: 5px solid #ccc; max-width: 450px; }
     svg { position: absolute; top: 0; left: 0; width: 3000px; height: 3000px; pointer-events: none; }
+    .animated-edge {
+      stroke-dasharray: 5, 5;
+      animation: dash 1s linear infinite;
+    }
+    @keyframes dash {
+      to { stroke-dashoffset: -20; }
+    }
   </style>
 </head>
 <body>
-  <div id="canvas-container">
-    <div id="mock-canvas"><svg id="svg-edges"></svg></div>
-  </div>
+  <header><h1 id="header-title"></h1></header>
+  <div id="canvas-container"><div id="mock-canvas"><svg id="svg-edges"></svg></div></div>
   <div id="info-panel">
-    <div id="info-type"></div>
-    <h4 id="info-title"></h4>
-    <p id="info-desc" style="white-space: pre-wrap;"></p>
+    <div id="info-type" style="font-size: 11px; font-weight: bold; color: #888;"></div>
+    <h4 id="info-title" style="margin: 0 0 8px 0; color: #222; font-size: 16px;"></h4>
+    <div id="info-desc" style="margin: 0; font-size: 13.5px; color: #444; white-space: pre-wrap; line-height: 1.5;"></div>
   </div>
-
   <script>
     const payload = ${jsonData};
-    const { nodes, edges } = payload;
+    const { nodes, edges, treeName } = payload;
+    document.getElementById("header-title").innerText = treeName || "数式マップ";
     const canvas = document.getElementById("mock-canvas");
     const svg = document.getElementById("svg-edges");
     const panel = document.getElementById("info-panel");
     const nodeMap = {};
+    const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+    defs.innerHTML = \`<marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#666"/></marker>\`;
+    svg.appendChild(defs);
 
     nodes.forEach(n => {
       const div = document.createElement("div");
@@ -346,57 +380,82 @@ const exportHTML = () => {
       div.onclick = (e) => {
         e.stopPropagation();
         panel.style.display = "block";
+        panel.style.borderLeftColor = n.data?.type === "theorem" ? "#2196f3" : "#4caf50";
         document.getElementById("info-type").innerText = n.data?.type === "theorem" ? "【定理】" : "【定義】";
         document.getElementById("info-title").innerText = n.data?.label || "";
-        document.getElementById("info-desc").innerText = n.data?.description || "";
+        document.getElementById("info-desc").innerText = n.data?.description || "※説明文はまだ登録されていません。";
       };
       canvas.appendChild(div);
       nodeMap[n.id] = { ...n, el: div };
     });
-
     document.body.onclick = () => { panel.style.display = "none"; };
 
-    edges.forEach((e, index) => {
+    edges.forEach((e) => {
       const src = nodeMap[e.source];
       const tgt = nodeMap[e.target];
       if (!src || !tgt) return;
-
-      const pathId = "path_" + (e.id || index);
-      const x1 = src.position.x + 200, y1 = src.position.y + 25;
-      const x2 = tgt.position.x, y2 = tgt.position.y + 25;
-
+      const sW = src.el.offsetWidth || 160;
+      const sH = src.el.offsetHeight || 60;
+      const tH = tgt.el.offsetHeight || 60;
+      const edgeIndex = e.data?.sameRouteIndex || 0;
+      const totalEdges = e.data?.sameRouteCount || 1;
+      const offsetAmt = totalEdges > 1 ? (edgeIndex - (totalEdges - 1) / 2) * 24 : 0;
+      const connOffset = totalEdges > 1 ? (edgeIndex - (totalEdges - 1) / 2) * 4 : 0;
+      const x1 = src.position.x + sW;
+      const y1 = src.position.y + sH / 2 + connOffset;
+      const x2 = tgt.position.x;
+      const y2 = tgt.position.y + tH / 2 + connOffset;
+      const centerCornerX = x1 + 30 + offsetAmt;
+      let pathD = "";
+      if (centerCornerX < x2) {
+        pathD = \`M \${x1} \${y1} H \${centerCornerX} V \${y2} H \${x2}\`;
+      } else {
+        const midY = y1 + (y2 - y1) / 2;
+        pathD = \`M \${x1} \${y1} H \${x1 + 15} V \${midY} H \${x2 - 15} V \${y2} H \${x2}\`;
+      }
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute("id", pathId);
-      path.setAttribute("d", \`M \${x1} \${y1} C \${x1 + 60} \${y1}, \${x2 - 60} \${y2}, \${x2} \${y2}\`);
-      path.setAttribute("stroke", "#666");
+      path.setAttribute("d", pathD);
+      const edgeColor = e.data?.color || "#666666";
+      path.setAttribute("stroke", edgeColor);
       path.setAttribute("stroke-width", "2");
       path.setAttribute("fill", "none");
+      if (e.data?.directed !== false) path.setAttribute("marker-end", "url(#arrow)");
+      if (e.animated || e.data?.animated) path.setAttribute("class", "animated-edge");
       svg.appendChild(path);
 
       if (e.data?.label) {
-        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-        const textPath = document.createElementNS("http://www.w3.org/2000/svg", "textPath");
-        textPath.setAttributeNS(null, "href", "#" + pathId);
-        textPath.setAttributeNS(null, "startOffset", "50%");
-        textPath.setAttributeNS(null, "text-anchor", "middle");
-        textPath.textContent = e.data.label;
-        text.appendChild(textPath);
-        text.style.fontSize = "12px";
-        text.style.fill = "#555";
-        svg.appendChild(text);
+        const labelDiv = document.createElement("div");
+        labelDiv.innerText = e.data.label;
+        labelDiv.style.position = "absolute";
+        labelDiv.style.background = "#ffffff";
+        labelDiv.style.padding = "4px 8px";
+        labelDiv.style.borderRadius = "4px";
+        labelDiv.style.boxShadow = "0 1px 4px rgba(0,0,0,0.1)";
+        labelDiv.style.border = "1px solid #ccc";
+        labelDiv.style.color = "#333";
+        labelDiv.style.fontSize = "11px";
+        labelDiv.style.fontWeight = "bold";
+        labelDiv.style.transform = "translate(-50%, -50%)";
+        const lx = centerCornerX < x2 ? centerCornerX : (x1 + x2) / 2;
+        const ly = (y1 + y2) / 2 + (totalEdges > 1 ? (edgeIndex - (totalEdges - 1) / 2) * 12 : 0);
+        labelDiv.style.left = lx + "px";
+        labelDiv.style.top = ly + "px";
+        canvas.appendChild(labelDiv);
       }
     });
   </script>
 </body>
 </html>`;
+const blob = new Blob([htmlContent], { type: "text/html" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    
+    // 【修正箇所】バッククォートで正しく囲み、空なら Mathtree になるように修正
+    a.download = `${treeName.trim() || "Mathtree"}.html`; 
+    
+    a.click();
+  };
 
-  // ダウンロード実行
-  const blob = new Blob([htmlContent], { type: "text/html" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "math_map.html";
-  a.click();
-};
   const addNode = useCallback(() => {
     if (!newNodeLabel.trim()) return
     const id = `node_${Date.now()}`
@@ -409,7 +468,7 @@ const exportHTML = () => {
     }
     setNodes((nds) => nds.concat(newNode))
     setNewNodeLabel("")
-    setNewNodeDesc("") // ★ここを修正しました (タイポ解消)
+    setNewNodeDesc("") 
     setIsModalOpen(false)
   }, [newNodeLabel, newNodeDesc, newNodeType, setNodes])
 
@@ -448,9 +507,7 @@ const exportHTML = () => {
         setConnectSourceId(null)
       } else {
         const existingEdge = edges.find(
-          (e) =>
-            (e.source === connectSourceId && e.target === node.id) ||
-            (e.source === node.id && e.target === connectSourceId)
+          (e) => (e.source === connectSourceId && e.target === node.id) || (e.source === node.id && e.target === connectSourceId)
         )
 
         if (existingEdge) {
@@ -573,6 +630,8 @@ const exportHTML = () => {
     return {
       ...e,
       type: "mathEdge",
+      // ★ ReactFlow標準側にも animated フラグの同期、及びデータ引き継ぎ
+      animated: data.animated,
       data: {
         ...data,
         sameRouteIndex: routeIndices[idx],
@@ -594,21 +653,16 @@ const exportHTML = () => {
 
   return (
     <div style={{ width: "100vw", height: "100vh", background: "#fafafa", position: "relative" }}>
+      {/* ★ アニメーション定義用CSSスタイルの埋め込み */}
+      <style>{animationStyles}</style>
+
       {/* メインメニュー */}
       <div style={{ position: "absolute", top: 20, left: 20, zIndex: 10, display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={() => setIsModalOpen(true)} style={{ padding: "10px 18px", cursor: "pointer", background: "#2e7d32", color: "white", border: "none", borderRadius: 4, fontWeight: "bold" }}>
-            ＋ ノード追加
-          </button>
-          <button onClick={autoLayout} style={{ padding: "10px 18px", cursor: "pointer", background: "#0288d1", color: "white", border: "none", borderRadius: 4, fontWeight: "bold" }}>
-            ✨ 自動で整地
-          </button>
-          <button onClick={exportImage} style={{ padding: "10px 18px", cursor: "pointer", background: "#6a1b9a", color: "white", border: "none", borderRadius: 4, fontWeight: "bold" }}>
-            📸 画像で保存 (PNG)
-          </button>
-          <button onClick={exportHTML} style={{ padding: "10px 18px", background: "#455a64", color: "white", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: "bold" }}>
-            🌐 HTMLとして保存
-          </button>
+          <button onClick={() => setIsModalOpen(true)} style={{ padding: "10px 18px", cursor: "pointer", background: "#2e7d32", color: "white", border: "none", borderRadius: 4, fontWeight: "bold" }}>＋ ノード追加</button>
+          <button onClick={autoLayout} style={{ padding: "10px 18px", cursor: "pointer", background: "#0288d1", color: "white", border: "none", borderRadius: 4, fontWeight: "bold" }}>✨ 自動で整地</button>
+          <button onClick={exportImage} style={{ padding: "10px 18px", cursor: "pointer", background: "#6a1b9a", color: "white", border: "none", borderRadius: 4, fontWeight: "bold" }}>📸 画像で保存 (PNG)</button>
+          <button onClick={exportHTML} style={{ padding: "10px 18px", background: "#455a64", color: "white", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: "bold" }}>🌐 HTMLとして保存</button>
           {isDirty && <span style={{ background: "#ef5350", width: 10, height: 10, borderRadius: "50%", display: "inline-block", alignSelf: "center" }} />}
         </div>
 
@@ -634,17 +688,10 @@ const exportHTML = () => {
             style={{ padding: "6px 12px", background: "#d32f2f", color: "white", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: "bold" }}
           >🗑️ 削除</button>
           <div style={{ width: "1px", height: "20px", background: "#ccc", margin: "0 4px" }} />
-          
-          <input 
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="🔍 キーワード検索..."
-            style={{ padding: "6px 10px", width: "160px", borderRadius: 4, border: "2px solid #ff9800", outline: "none", fontWeight: "bold" }} 
-          />
+          <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="🔍 キーワード検索..." style={{ padding: "6px 10px", width: "160px", borderRadius: 4, border: "2px solid #ff9800", outline: "none", fontWeight: "bold" }} />
           {searchQuery && (
             <button onClick={() => setSearchQuery("")} style={{ background: "none", border: "none", cursor: "pointer", color: "#888", marginLeft: -30, marginRight: 10, fontSize: 12 }}>✖</button>
           )}
-
           <div style={{ width: "1px", height: "20px", background: "#ccc", margin: "0 4px" }} />
           <button onClick={exportJSON} style={{ padding: "6px 12px", background: "#78909c", color: "white", border: "none", borderRadius: 4, cursor: "pointer", fontSize: "12px" }}>📤 出力</button>
           <label style={{ padding: "6px 12px", background: "#5c6bc0", color: "white", borderRadius: 4, cursor: "pointer", fontSize: "12px" }}>
@@ -679,7 +726,7 @@ const exportHTML = () => {
           </select>
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={addNode} style={{ flex: 1, padding: 8, background: "#2e7d32", color: "white", border: "none", borderRadius: 4, cursor: "pointer" }}>追加</button>
-<button onClick={() => setIsModalOpen(false)} style={{ flex: 1, padding: 8, background: "#eee", border: "none", borderRadius: 4, cursor: "pointer" }}>キャンセル</button>
+            <button onClick={() => setIsModalOpen(false)} style={{ flex: 1, padding: 8, background: "#eee", border: "none", borderRadius: 4, cursor: "pointer" }}>キャンセル</button>
           </div>
         </div>
       )}
