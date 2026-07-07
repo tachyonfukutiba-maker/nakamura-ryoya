@@ -45,6 +45,28 @@ const NODE_COLORS = {
   theorem: { background: "#e3f2fd", border: "#2196f3", text: "#0d47a1" }
 }
 
+// 🌐 【URL共有用】データを安全にBase64文字列に変換する関数
+function encodeData(data: any): string {
+  const jsonStr = JSON.stringify(data);
+  // 日本語（UTF-8）を壊さないようにエンコードしてBase64化
+  return btoa(encodeURIComponent(jsonStr).replace(/%([0-9A-F]{2})/g, (_, p1) => {
+    return String.fromCharCode(parseInt(p1, 16));
+  }));
+}
+
+// 🌐 【URL共有用】Base64文字列からデータを復元する関数
+function decodeData(base64Str: string): any {
+  try {
+    const jsonStr = decodeURIComponent(Array.prototype.map.call(atob(base64Str), (c) => {
+      return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+    }).join(''));
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    console.error("URLデータのデコードに失敗しました", e);
+    return null;
+  }
+}
+
 // 📐 日本語 ＋ 数式判別コンポーネント
 function MathText({ text }: { text: string }) {
   if (!text) return <span></span>
@@ -207,9 +229,9 @@ function MathEdgeCustom({ id, sourceX, sourceY, targetX, targetY, sourcePosition
               boxShadow: "0 1px 4px rgba(0,0,0,0.1)", 
               border: `1px solid ${isSelected ? "#ef5350" : "#ccc"}`, 
               color: isSelected ? "#ef5350" : "#333", 
-              fontSize: "11px",             
+              fontSize: "11px",              
               fontWeight: "bold", 
-              whiteSpace: "normal",         
+              whiteSpace: "normal",          
               wordBreak: "break-word",      
               display: "block", 
               maxWidth: "140px",            
@@ -288,6 +310,23 @@ function App() {
     if (list) setSavedTrees(JSON.parse(list))
   }, [])
 
+  // 🌐 【追加】起動時にURLの「?data=xxx」パラメータをチェックしてデータを復元
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sharedDataParam = params.get("data");
+    
+    if (sharedDataParam) {
+      const decoded = decodeData(sharedDataParam);
+      if (decoded && decoded.nodes && decoded.edges) {
+        setNodes(decoded.nodes);
+        setEdges(decoded.edges);
+        setTreeName(decoded.treeName || "共有されたツリー");
+        // 描画が安定するまで少し待ってから全体をフィットさせる
+        setTimeout(() => fitView({ padding: 0.1 }), 200);
+      }
+    }
+  }, []);
+
   // 🔍 検索窓連携
   useEffect(() => {
     nodes.forEach((node) => {
@@ -345,6 +384,27 @@ function App() {
     alert(`「${treeName}」を保存しました！`)
   }
 
+  // 🌐 【追加】現在の状態をエンコードして共有URLをクリップボードにコピーする関数
+  const copyShareLink = () => {
+    const payload = {
+      treeName,
+      nodes,
+      edges
+    };
+    const encoded = encodeData(payload);
+    // パラメータを付けたURLを生成 (現在のアドレスのベースを使用)
+    const shareUrl = `${window.location.origin}${window.location.pathname}?data=${encoded}`;
+    
+    navigator.clipboard.writeText(shareUrl)
+      .then(() => {
+        alert("共有用URLをクリップボードにコピーしました！SNSやメールで共有できます。");
+      })
+      .catch((err) => {
+        console.error("URLのコピーに失敗しました", err);
+        alert("URLのコピーに失敗しました。お手数ですが、コンソール等をご確認ください。");
+      });
+  };
+
   const exportJSON = () => {
     const dataStr = JSON.stringify({ treeName, nodes, edges }, null, 2)
     const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr)
@@ -390,8 +450,8 @@ function App() {
       style: { overflow: "visible" }
     }
     setNodes((nds) => nds.concat(newNode))
-    setNewNodeLabel("")
-    setNewNodeDesc("")
+    newNodeLabel && setNewNodeLabel("")
+    newNodeDesc && setNewNodeDesc("")
     setIsModalOpen(false)
   }, [newNodeLabel, newNodeDesc, newNodeType, setNodes])
 
@@ -531,7 +591,7 @@ function App() {
     }, 150)
   }, [treeName, fitView])
 
-// 🎯【重なり自動検知インジェクション】
+  // 🎯【重なり自動検知インジェクション】
   // 同じ Source と Target を持つエッジの組み合わせを数え上げ、個々のエッジにインデックスを付与する
   const routeCounts: Record<string, number> = {}
   const routeIndices = edges.map((e) => {
@@ -583,6 +643,10 @@ function App() {
           </button>
           <button onClick={exportImage} style={{ padding: "10px 18px", cursor: "pointer", background: "#6a1b9a", color: "white", border: "none", borderRadius: 4, fontWeight: "bold" }}>
             📸 画像で保存 (PNG)
+          </button>
+          {/* 🌐 【追加】URL共有ボタン */}
+          <button onClick={copyShareLink} style={{ padding: "10px 18px", cursor: "pointer", background: "#00b0ff", color: "white", border: "none", borderRadius: 4, fontWeight: "bold", display: "flex", alignItems: "center", gap: "6px" }}>
+            🔗 共有URLをコピー
           </button>
           {isDirty && <span style={{ background: "#ef5350", width: 10, height: 10, borderRadius: "50%", display: "inline-block", alignSelf: "center" }} />}
         </div>
