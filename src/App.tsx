@@ -478,7 +478,7 @@ function App() {
 
       // kvdb.io にデータを保存
       const response = await fetch(`https://kvdb.io/MN887yq6p4m6Yg7vXpRDY6/${dataId}`, {
-        method: 'POST',
+        method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
         },
