@@ -281,32 +281,7 @@ function App() {
 
   const selectedNodeData = nodes.find((n) => n.id === selectedNodeId)
   const selectedEdgeData = edges.find((e) => e.id === selectedEdgeId)
-// 1. ページ読み込み時にURLの「id」をチェックしてデータを復元する処理
-  useEffect(() => {
-    const searchParams = new URLSearchParams(window.location.search);
-    const dataId = searchParams.get('id');
 
-    if (dataId) {
-      // 外部ストレージからデータを取得
-      fetch(`https://kvdb.io/MN887yq6p4m6Yg7vXpRDY6/${dataId}`)
-        .then((res) => {
-          if (!res.ok) throw new Error('データの取得に失敗しました');
-          return res.json();
-        })
-        .then((savedData) => {
-          if (savedData.nodes && savedData.edges) {
-            setNodes(savedData.nodes);
-            setEdges(savedData.edges);
-            if (savedData.treeName) setTreeName(savedData.treeName);
-            alert('共有されたツリーデータを読み込みました！');
-          }
-        })
-        .catch((err) => {
-          console.error(err);
-          alert('共有データの読み込みに失敗したか、リンクの期限が切れています。');
-        });
-    }
-  }, [setNodes, setEdges, setTreeName]); // 依存配列に必要な関数を追加してエラーを防止
   useEffect(() => {
     if (selectedNodeId) {
       const current = nodes.find(n => n.id === selectedNodeId)
@@ -463,47 +438,7 @@ function App() {
       }
     }
   }
-// 2. 共有URLを生成してクリップボードにコピーする関数（確定修正版）
-  const handleShare = async () => {
-    try {
-      // 保存するデータオブジェクト
-      const dataToSave = {
-        nodes,
-        edges,
-        treeName,
-      };
 
-      // ランダムな一意のIDを生成（8文字の英数字）
-      const dataId = Math.random().toString(36).substring(2, 10);
-
-      // 💡最重要：JSONを一度きれいな「文字列」に変換します
-      const jsonString = JSON.stringify(dataToSave);
-
-      // kvdb.io にデータを保存
-      const response = await fetch(`https://kvdb.io/MN887yq6p4m6Yg7vXpRDY6/${dataId}`, {
-        method: 'POST', // ➔ POSTに戻します！
-        headers: {
-          // 💡Content-Typeを json ではなく text/plain (ただの文字列) に指定
-          'Content-Type': 'text/plain', 
-        },
-        body: jsonString, // ➔ 文字列化したデータをそのまま流し込む
-      });
-
-      if (!response.ok) {
-        throw new Error(`サーバーエラー: ${response.status}`);
-      }
-
-      // 短い共有URLを組み立て
-      const shareUrl = `${window.location.origin}${window.location.pathname}?id=${dataId}`;
-
-      // クリップボードにコピー
-      await navigator.clipboard.writeText(shareUrl);
-      alert('短縮共有URLをクリップボードにコピーしました！スマホでも開けます。');
-    } catch (err) {
-      console.error(err);
-      alert('URLの生成またはコピーに失敗しました。');
-    }
-  };
   const addNode = useCallback(() => {
     if (!newNodeLabel.trim()) return
     const id = `node_${Date.now()}`
@@ -748,7 +683,7 @@ function App() {
           {searchQuery && (
             <button onClick={() => setSearchQuery("")} style={{ background: "none", border: "none", cursor: "pointer", color: "#888", marginLeft: -30, marginRight: 10, fontSize: 12 }}>✖</button>
           )}
-<button onClick={handleShare} style={{ padding: "6px 12px", background: "#0288d1", color: "white", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: "bold" }}>🔗 リンク生成</button>
+
           <div style={{ width: "1px", height: "20px", background: "#ccc", margin: "0 4px" }} />
           <button onClick={exportJSON} style={{ padding: "6px 12px", background: "#78909c", color: "white", border: "none", borderRadius: 4, cursor: "pointer", fontSize: "12px" }}>📤 出力</button>
           <label style={{ padding: "6px 12px", background: "#5c6bc0", color: "white", borderRadius: 4, cursor: "pointer", fontSize: "12px" }}>
